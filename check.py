@@ -1,5 +1,6 @@
 import cv2
 import os
+import json
 import numpy as np
 import joblib
 import torchvision.models as models
@@ -58,26 +59,28 @@ def gray(img_path):
     return out
 
 
-def Sobel_detection(img, threshold=-1):
+def Sobel_detection(img):
     dx = cv2.Sobel(img, cv2.CV_32F, 1, 0)  # 获取水平方向的偏导
     dy = cv2.Sobel(img, cv2.CV_32F, 0, 1)  # 获取竖直方向的偏导
-    angle = np.arctan(dx / (dy + 1e-5))
-    temp = np.where(dx < 0)
-    angle[temp] += np.pi
     mag = cv2.magnitude(dx, dy)
     mag = cv2.convertScaleAbs(mag)
     return mag
 
 
 def preprocess(raw_img, grad):
-    img = cv2.cvtColor(raw_img, cv2.COLOR_BGR2HSV)
-    lower_red1 = np.array([150, 20, 100])
+    hsv = cv2.cvtColor(raw_img, cv2.COLOR_BGR2HSV)
+    lower_red1 = np.array([120, 0, 220])
     upper_red1 = np.array([180, 255, 255])
-    thresh = cv2.inRange(img, lower_red1, upper_red1)
+    lower_red2 = np.array([0, 0, 230])
+    upper_red2 = np.array([10, 255, 255])
+    thresh = cv2.inRange(hsv, lower_red1, upper_red1) | cv2.inRange(hsv, lower_red2, upper_red2)
+    # lower_red1 = np.array([120, 0, 220])
+    # upper_red1 = np.array([180, 255, 255])
+    # thresh = cv2.inRange(hsv, lower_red1, upper_red1)
     thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
     img = grad.copy()
     img[thresh == 0] = 0
-    img = cv2.threshold(img, 150, 255, cv2.THRESH_BINARY)[1]
+    img = cv2.threshold(img, 100, 255, cv2.THRESH_BINARY)[1]
     return img
 
 
@@ -88,7 +91,7 @@ def Variance_compute(center, contours):
     return variance
 
 
-def Circle_detect(img, minVar, minRadius, maxRadius, is_circle=True):
+def Circle_detect(img, minVar, minRadius, maxRadius, is_circle):
     result = []
     # 对二值图像生成边界
     contours, hierarchy = cv2.findContours(img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
@@ -111,38 +114,42 @@ def Circle_detect(img, minVar, minRadius, maxRadius, is_circle=True):
     return result
 
 
-def select(frame_, device, clf):
+def select(frame_, device, clf, model, is_circle):
     frame = frame_.copy()
     img = adjust(frame)
     gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     Sobel = Sobel_detection(gray_img)
     grad = preprocess(frame, Sobel)
-    circles = Circle_detect(grad, 5, minRadius=2, maxRadius=15, is_circle=False)
+    circles = Circle_detect(grad, 6, minRadius=3, maxRadius=10, is_circle=is_circle)
+    # result = np.ones_like(frame_) * 255
     result = frame.copy()
-    # rects = []
+    rects = []
     for i in range(len(circles)):
-        # 用外接矩形框出目标点
-        x, y, w, h = cv2.boundingRect(circles[i])
-        new_x = max(0, x - w)
-        new_y = max(0, y - h)
-        new_w = 3 * w
-        new_h = 3 * h
-        new_x_ = min(frame_.shape[1], new_x + new_w)
-        new_y_ = min(frame_.shape[0], new_y + new_h)
-        temp = frame_[new_y: new_y_, new_x: new_x_].copy()
-        temp = cv2.resize(temp, (32, 32))
-        temp_img = Image.fromarray(cv2.cvtColor(temp, cv2.COLOR_BGR2RGB)).convert('RGB')
-        # augmentation(img, name)
-        input = img_trans(temp_img, device)
-        output = model(input)
-        feature = output.cpu().detach().numpy()
-        if clf.predict(feature) == 1:
-            result = cv2.rectangle(result, (new_x, new_y), (new_x_, new_y_), (0, 255, 0), 2)
-        # # 用圆形框出目标点
-        # x, y = int(circles[i][0]), int(circles[i][1])
-        # radius = int(circles[i][2])
-        # result = cv2.circle(result, (x, y), radius, (0, 255, 0))
-    return result
+        if is_circle:
+            # 用圆形框出目标点
+            x, y = int(circles[i][0]), int(circles[i][1])
+            radius = int(circles[i][2])
+            result = cv2.circle(result, (x, y), radius, (0, 255, 0), -1)
+        else:
+            # 用外接矩形框出目标点
+            x, y, w, h = cv2.boundingRect(circles[i])
+            new_x = max(0, x - w)
+            new_y = max(0, y - h)
+            new_w = 3 * w
+            new_h = 3 * h
+            new_x_ = min(frame_.shape[1], new_x + new_w)
+            new_y_ = min(frame_.shape[0], new_y + new_h)
+            temp = frame_[new_y: new_y_, new_x: new_x_].copy()
+            temp = cv2.resize(temp, (32, 32))
+            temp_img = Image.fromarray(cv2.cvtColor(temp, cv2.COLOR_BGR2RGB)).convert('RGB')
+            # augmentation(img, name)
+            input = img_trans(temp_img, device)
+            output = model(input)
+            feature = output.cpu().detach().numpy()
+            if clf.predict(feature) == 1:
+                rects.append((new_x, new_y, new_x_, new_y_))
+                result = cv2.rectangle(result, (new_x, new_y), (new_x_, new_y_), (0, 255, 0), 2)
+    return result, rects
 
 
 def img_trans(img, device):
@@ -151,34 +158,150 @@ def img_trans(img, device):
     return input_img.to(device)
 
 
+def main(raw_img, is_circle=False):
+    result, rects = select(raw_img, device, clf, model, is_circle)
+    return result, rects
+    # for i in range(8, 12):
+    #     root_name = os.path.join('ImageSet', str(i))
+    #     # root_name = 'V11004-220853_grad_thresh_150'
+    #     if not os.path.exists(root_name):
+    #         os.makedirs(root_name)
+    #     out_path = f'output/track_{i}.mp4'
+    #     video = cv2.VideoWriter(out_path, fourcc=cv2.VideoWriter_fourcc('M', 'P', '4', 'V'), fps=30,
+    #                             frameSize=(3840, 2160))
+    #     videoCapture = cv2.VideoCapture(root_name + '.mp4')
+    #     fps = round(videoCapture.get(cv2.CAP_PROP_FPS))
+    #     success, frame = videoCapture.read()
+    #     # cv2.namedWindow('test', 0)
+    #     # frame_id = 0
+    #     while success:
+    #         # img = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    #         # lower_red1 = np.array([150, 20, 100])
+    #         # upper_red1 = np.array([180, 255, 255])
+    #         # thresh = cv2.inRange(img, lower_red1, upper_red1)
+    #         # thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
+    #         # if frame_id % fps == 0:
+    #         result = select(frame, device, clf)
+    #         video.write(result)
+    #         # cv2.imwrite(os.path.join(root_name, str(frame_id)) + '.jpg', result)
+    #         # frame_id += 1
+    #         success, frame = videoCapture.read()  # 获取下一帧
+    #     videoCapture.release()
+    #     video.release()
+
+
+def laser_spot_detector():
+    root_name = 'ImageSet/test'
+    out_path = f'output/test_track.avi'
+    video = cv2.VideoWriter(out_path, fourcc=cv2.VideoWriter_fourcc(*'XVID'), fps=30,
+                            frameSize=(1920, 1080))
+    videoCapture = cv2.VideoCapture(root_name + '.mp4')
+    # fps = round(videoCapture.get(cv2.CAP_PROP_FPS))
+    success, frame = videoCapture.read()
+    # cv2.namedWindow('test', 0)
+    # frame_id = 0
+    while success:
+        # img = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        # lower_red1 = np.array([150, 20, 100])
+        # upper_red1 = np.array([180, 255, 255])
+        # thresh = cv2.inRange(img, lower_red1, upper_red1)
+        # thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
+        # if frame_id % fps == 0:
+        result, _ = select(frame, device, clf, model, False)
+        video.write(result)
+        # cv2.imwrite(os.path.join(root_name, str(frame_id)) + '.jpg', result)
+        # frame_id += 1
+        success, frame = videoCapture.read()  # 获取下一帧
+    videoCapture.release()
+    video.release()
+
+
+def IOU(a1, a2, b1, b2):
+    S_a = (a2[0] - a1[0]) * (a2[1] - a1[1])
+    S_b = (b2[0] - b1[0]) * (b2[1] - b1[1])
+    xmin = max(a1[0], b1[0])
+    ymin = max(a1[1], b1[1])
+    xmax = min(a2[0], b2[0])
+    ymax = min(a2[1], b2[1])
+    height = max(0, ymax - ymin)
+    width = max(0, xmax - xmin)
+    S_I = height * width
+    iou = S_I / (S_a + S_b - S_I)
+    return iou
+
+
+def accuracy():
+    TP = 0
+    FP = 0
+    FN = 0
+    for path in os.listdir('Accurate/groundtruth'):
+        # os.mkdir(f'test/{path}')
+        # for img_name in os.listdir('test_img/' + path):
+        # for img_name in ['0060.jpg', '0390.jpg', '0510.jpg', '0630.jpg', '0750.jpg']:
+        # img = cv2.imread(f'test_img/{path}/{img_name}')
+        img_name = path.split('.')[0] + '.jpg'
+        img = cv2.imread(f'Accurate/ImageSet/{img_name}')
+        result, rects = main(img, False)
+        with open(f'Accurate/groundtruth/{path}') as f:
+            groundData = json.load(f)
+        for groundtruth in groundData['shapes']:
+            ground_p1 = groundtruth['points'][0]
+            ground_p2 = groundtruth['points'][1]
+            flag = 0
+            for temp in rects:
+                temp_p1 = list(temp[0:2])
+                temp_p2 = list(temp[2:4])
+                iou = IOU(ground_p1, ground_p2, temp_p1, temp_p2)
+                if iou > 0.05:
+                    if flag == 0:
+                        flag = 1
+                        TP += 1
+                else:
+                    FP += 1
+            if flag == 0:
+                FN += 1
+    print(f'TP:{TP}\nFP:{FP}\nFN:{FN}\nPrecision:{TP / (TP + FP)}\nRecall:{TP / (TP + FN)}')
+
+
 if __name__ == '__main__':
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     model = models.resnet50(pretrained=True).to(device)
     model.eval()
     clf = Ensemble()
-    for i in range(8, 12):
-        root_name = os.path.join('ImageSet', str(i))
-        # root_name = 'V11004-220853_grad_thresh_150'
-        if not os.path.exists(root_name):
-            os.makedirs(root_name)
-        out_path = f'output/track_{i}.mp4'
-        video = cv2.VideoWriter(out_path, fourcc=cv2.VideoWriter_fourcc('M', 'P', '4', 'V'), fps=30, frameSize=(3840, 2160))
-        videoCapture = cv2.VideoCapture(root_name + '.mp4')
-        fps = round(videoCapture.get(cv2.CAP_PROP_FPS))
-        success, frame = videoCapture.read()
-        # cv2.namedWindow('test', 0)
-        # frame_id = 0
-        while success:
-            # img = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-            # lower_red1 = np.array([150, 20, 100])
-            # upper_red1 = np.array([180, 255, 255])
-            # thresh = cv2.inRange(img, lower_red1, upper_red1)
-            # thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
-            # if frame_id % fps == 0:
-            result = select(frame, device, clf)
-            video.write(result)
-            # cv2.imwrite(os.path.join(root_name, str(frame_id)) + '.jpg', result)
-            # frame_id += 1
-            success, frame = videoCapture.read()  # 获取下一帧
-        videoCapture.release()
-        video.release()
+    # for frame_id in ['0060.jpg', '0084.jpg', '0425.jpg', '0804.jpg', '0909.jpg']:
+    # for frame_id in ['0909.jpg']:
+    # for frame_id in ['49.png', '71.png', '110.png']:
+    for frame_id in os.listdir('H:/rgb'):
+        frame = cv2.imread(f'H:/rgb/{frame_id}')
+        frame, _ = main(frame, False)
+        cv2.imwrite(f'H:/rgb_out_6/{frame_id}', frame)
+    # video = cv2.VideoCapture(f'ImageSet/test3.mp4')
+    # success, frame = video.read()
+    # frame_id = 0
+    # while success:
+    #     if frame_id in [60, 111,425, 804,924]:
+    #         result, _ = main(frame, False)
+    #         cv2.imwrite(f'test_img/test3_{str(frame_id).zfill(4)}.jpg', result)
+    #     frame_id += 1
+    #     success, frame = video.read()
+    # video.release()
+    # for i in range(2, 12):
+    #     os.makedirs(f'test_img/{i}')
+    #     video = cv2.VideoCapture(f'ImageSet/{i}.mp4')
+    #     success, frame = video.read()
+    #     frame_id = 0
+    #     while success:
+    #         if frame_id % 30 == 0:
+    #             cv2.imwrite(f'test_img/{i}/{str(frame_id).zfill(4)}.jpg', frame)
+    #         frame_id += 1
+    #         success, frame = video.read()
+    #     video.release()
+    # laser_spot_detector()
+    # device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    # model = models.resnet50(pretrained=True).to(device)
+    # model.eval()
+    # clf = Ensemble()
+    # img = cv2.imread('test_img/6/0720.jpg')
+    # result, rects = main(img)
+    # cv2.imwrite('CCDC_en/imgs/candidate/result_5_0330.jpg', result)
+    # for path in os.listdir('test_img/8'):
