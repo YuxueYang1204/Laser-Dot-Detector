@@ -1,0 +1,26 @@
+{
+  "classifier_param": "Checkpoint/Ensemble.model",
+  "network_param_pth": "Checkpoint/resnet50.pth",
+  "range_of_filter": [
+    {
+      "low": [
+        150,
+        20,
+        220
+      ],
+      "up": [
+        180,
+        255,
+        255
+      ]
+    }
+  ],
+  "grad_thresh": 50,
+  "args_in_CDBPS": {
+    "minVar": 5,
+    "minRadius": 3,
+    "maxRadius": 15
+  },
+  "output_is_circle": false,
+  "structure_size": 7
+}
