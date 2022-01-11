@@ -48,6 +48,8 @@ The structure of files is as follows:
   ├── train.py
 ```
 
+`Dataset`,`TestSet` and `TrainingSet` can be downloaded from [Here](https://drive.google.com/file/d/12XDnl01YyDvOY9YJ6nTKh2At0nOR-y-W/view?usp=sharing).
+
 ## Demo
 
 We provide a demo script to detect some images with the laser spot.
@@ -148,3 +150,9 @@ detector = Detector(
     structure_size=7
 )
 ```
+
+## Author
+
+- Yuxue Yang
+
+Please raise an issue or send email to yuppie898988@gmail.com if there are any issues running the code.
